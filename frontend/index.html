@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ПО-33 · Расписание</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --ink:#1b1d1f;
+    --panel:#232628;
+    --paper:#f4f2ec;
+    --amber:#ffb000;
+    --amber-dim:#8a6000;
+    --muted:#8f948f;
+    --line:#33373a;
+    --radius:2px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--ink);
+    color:var(--paper);
+    font-family:'Inter',system-ui,sans-serif;
+    min-height:100vh;
+  }
+  .wrap{max-width:720px;margin:0 auto;padding:28px 20px 60px;}
+
+  /* ---- hero: split-flap header ---- */
+  header{padding:8px 0 24px;border-bottom:1px solid var(--line);}
+  .group-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;}
+  .group{font-family:'Space Mono',monospace;font-weight:700;font-size:15px;letter-spacing:.12em;color:var(--amber);}
+  .clock{font-family:'Space Mono',monospace;font-size:15px;color:var(--muted);letter-spacing:.05em;}
+  .status{margin-top:18px;}
+  .status-label{font-size:12px;color:var(--muted);margin-bottom:6px;}
+  .status-main{font-family:'Space Mono',monospace;font-size:clamp(22px,5vw,32px);font-weight:700;line-height:1.25;}
+  .status-main .hl{color:var(--amber);}
+  .status-sub{margin-top:4px;color:var(--muted);font-size:14px;}
+
+  /* ---- day tabs ---- */
+  nav{display:flex;gap:2px;margin:24px 0 2px;overflow-x:auto;}
+  nav button{
+    flex:1 0 auto;
+    background:none;border:1px solid var(--line);
+    color:var(--muted);
+    font-family:'Space Mono',monospace;
+    font-size:12px;letter-spacing:.06em;
+    padding:10px 8px;cursor:pointer;
+    border-radius:var(--radius);
+  }
+  nav button.active{color:var(--ink);background:var(--amber);border-color:var(--amber);font-weight:700;}
+  nav button:hover:not(.active){border-color:var(--muted);}
+
+  /* ---- board ---- */
+  .board{margin-top:2px;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
+  .row{
+    display:grid;
+    grid-template-columns:64px 1fr;
+    border-top:1px solid var(--line);
+  }
+  .row:first-child{border-top:none;}
+  .row.now{background:rgba(255,176,0,.08);}
+  .cell-time{
+    padding:14px 10px;
+    font-family:'Space Mono',monospace;
+    font-size:12px;color:var(--muted);
+    border-right:1px solid var(--line);
+    display:flex;flex-direction:column;justify-content:center;gap:2px;
+  }
+  .row.now .cell-time{color:var(--amber);}
+  .cell-time .n{font-size:16px;font-weight:700;}
+  .cell-main{padding:14px 14px;}
+  .subject{font-weight:600;font-size:15px;line-height:1.35;}
+  .meta{margin-top:4px;color:var(--muted);font-size:13px;}
+  .empty{padding:40px 14px;text-align:center;color:var(--muted);font-size:14px;}
+
+  footer{margin-top:28px;color:var(--muted);font-size:12px;text-align:center;}
+  a{color:var(--amber);}
+
+  @media (prefers-reduced-motion:no-preference){
+    .row.now{animation:pulse 2.4s ease-in-out infinite;}
+  }
+  @keyframes pulse{
+    0%,100%{background:rgba(255,176,0,.08);}
+    50%{background:rgba(255,176,0,.16);}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="group-row">
+      <div class="group">ПО-33</div>
+      <div class="clock" id="clock">--:--:--</div>
+    </div>
+    <div class="status">
+      <div class="status-label">СЕЙЧАС</div>
+      <div class="status-main" id="statusMain">Загрузка…</div>
+      <div class="status-sub" id="statusSub"></div>
+    </div>
+  </header>
+
+  <nav id="dayTabs"></nav>
+  <div class="board" id="board"><div class="empty">Загрузка расписания…</div></div>
+
+  <footer>Данные обновляются напрямую из Supabase — измените предмет в Table Editor,
+    перезагрузите страницу, и здесь появится новое значение.</footer>
+</div>
+
+<script>
+// ==== НАСТРОЙКИ: впишите свои данные из Supabase → Project Settings → API ====
+const SUPABASE_URL = "https://vlwvyysoppgtkpfcfrgv.supabase.co/rest/v1/";
+const SUPABASE_ANON_KEY = "sb_publishable_Kv9AWzNKIwTD0unMq81m4A_YEafUcPS";
+const GROUP_NAME = "ПО-33";
+// ==============================================================================
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const DAY_NAMES = ["", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+const DAY_NAMES_FULL = ["", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"];
+
+let schedule = [];           // все пары группы, отсортированные
+let selectedDay = jsDayToOur(new Date().getDay());
+
+function jsDayToOur(jsDay){ // JS: 0=Вс..6=Сб  →  наша схема: 1=Пн..6=Сб, 0(Вс) не используется
+  return jsDay === 0 ? 7 : jsDay;
+}
+
+function toMinutes(t){ // "09:30:00" -> 570
+  const [h,m] = t.split(":").map(Number);
+  return h*60+m;
+}
+
+async function loadSchedule(){
+  const { data: groups, error: gErr } = await sb.from("groups").select("id").eq("name", GROUP_NAME).single();
+  if (gErr || !groups) { document.getElementById("board").innerHTML = '<div class="empty">Не удалось загрузить группу. Проверьте SUPABASE_URL / KEY.</div>'; return; }
+
+  const { data, error } = await sb
+    .from("schedule")
+    .select("*")
+    .eq("group_id", groups.id)
+    .order("day_of_week", { ascending: true })
+    .order("lesson_number", { ascending: true });
+
+  if (error) { document.getElementById("board").innerHTML = '<div class="empty">Ошибка загрузки расписания.</div>'; return; }
+  schedule = data || [];
+  renderTabs();
+  renderBoard();
+  renderStatus();
+}
+
+function renderTabs(){
+  const nav = document.getElementById("dayTabs");
+  nav.innerHTML = "";
+  for (let d=1; d<=6; d++){
+    const btn = document.createElement("button");
+    btn.textContent = DAY_NAMES[d];
+    if (d === selectedDay) btn.classList.add("active");
+    btn.onclick = () => { selectedDay = d; renderTabs(); renderBoard(); };
+    nav.appendChild(btn);
+  }
+}
+
+function renderBoard(){
+  const board = document.getElementById("board");
+  const dayLessons = schedule.filter(s => s.day_of_week === selectedDay);
+  if (dayLessons.length === 0){
+    board.innerHTML = '<div class="empty">В этот день пар нет</div>';
+    return;
+  }
+  const now = new Date();
+  const nowMin = now.getHours()*60 + now.getMinutes();
+  const isToday = selectedDay === jsDayToOur(now.getDay());
+
+  board.innerHTML = dayLessons.map(l => {
+    const isNow = isToday && nowMin >= toMinutes(l.time_start) && nowMin < toMinutes(l.time_end);
+    return `
+      <div class="row ${isNow ? "now" : ""}">
+        <div class="cell-time">
+          <span class="n">${l.lesson_number}</span>
+          <span>${l.time_start.slice(0,5)}–${l.time_end.slice(0,5)}</span>
+        </div>
+        <div class="cell-main">
+          <div class="subject">${escapeHtml(l.subject_name)}</div>
+          <div class="meta">${escapeHtml(l.teacher || "")}${l.room ? " · ауд. " + escapeHtml(l.room) : ""}</div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function renderStatus(){
+  const now = new Date();
+  const today = jsDayToOur(now.getDay());
+  const nowMin = now.getHours()*60 + now.getMinutes();
+  const todayLessons = schedule.filter(s => s.day_of_week === today).sort((a,b)=>toMinutes(a.time_start)-toMinutes(b.time_start));
+
+  const main = document.getElementById("statusMain");
+  const sub = document.getElementById("statusSub");
+
+  if (today === 7 || todayLessons.length === 0){
+    main.innerHTML = "Сегодня пар нет";
+    sub.textContent = "";
+    return;
+  }
+
+  const current = todayLessons.find(l => nowMin >= toMinutes(l.time_start) && nowMin < toMinutes(l.time_end));
+  if (current){
+    main.innerHTML = `Идёт ${current.lesson_number} пара: <span class="hl">${escapeHtml(current.subject_name)}</span>`;
+    sub.textContent = `${current.time_start.slice(0,5)}–${current.time_end.slice(0,5)}${current.room ? " · ауд. " + current.room : ""}`;
+    return;
+  }
+
+  const next = todayLessons.find(l => toMinutes(l.time_start) > nowMin);
+  if (next){
+    main.innerHTML = `Перемена · далее ${next.lesson_number} пара`;
+    sub.textContent = `${escapeHtml(next.subject_name)} в ${next.time_start.slice(0,5)}`;
+    return;
+  }
+
+  main.textContent = "На сегодня все пары закончились";
+  sub.textContent = "";
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function tickClock(){
+  const now = new Date();
+  document.getElementById("clock").textContent = now.toLocaleTimeString("ru-RU");
+  renderStatus();
+  // перерисовать доску раз в минуту, чтобы подсветка "текущей пары" двигалась
+  if (now.getSeconds() === 0) renderBoard();
+}
+
+loadSchedule();
+setInterval(tickClock, 1000);
+</script>
+</body>
+</html>
